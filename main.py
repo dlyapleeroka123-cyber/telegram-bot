@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 API_ID = 22376342
 API_HASH = 'f623dc4ae2b015463cfde7874ab0f270'
-BOT_TOKEN = '8428497737:AAFPwtkZHsZKDjvuoaUwnb2E_qTr3rSa3rc'
+BOT_TOKEN = '8676950658:AAFHR4dLYRA8LxYv0s0AQ0osWDn1F7pKZ1U'
 ADMIN_ID = "7113397602"
 ADMIN_PASS = "12gleb34"
 DB_FILE = 'users_data.json'
