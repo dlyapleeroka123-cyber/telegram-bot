@@ -14,27 +14,35 @@ API_ID = 22376342
 API_HASH = 'f623dc4ae2b015463cfde7874ab0f270'
 BOT_TOKEN = '8706050462:AAFDuT53Q5CD6ZHBfAy09drphgLSN6xWfcA'
 ADMIN_ID = "7113397602"
-ADMIN_PASS = "12gleb34"
 DB_FILE = 'users_data.json'
 
 bot = AsyncTeleBot(BOT_TOKEN)
 user_states = {}
 active_tasks = {}
+global_stopped = False
+
+WELCOME_TEXT = """<b>✏️ Добро пожаловать в мир умных рассылок!</b>
+
+<i>Приветствуем тебя, дорогой пользователь! 👋</i> Ты открыл дверь к инструменту, который сделает твою работу в разы эффективнее и проще. Это не просто бот, а твой <b>персональный ассистент</b> по автоматизации коммуникаций. 🤖✨
+
+<b>📚 Безопасность прежде всего</b>
+Мы знаем, как важна конфиденциальность в наше время:
+
+- <b>Полная защита:</b> Наш софт НЕ ворует сессии. 🔒
+- <b>Прозрачность:</b> Бот создан для легальной автоматизации. ✅
+
+<b>📚 Команда создателей</b>
+- <b>Разработчик:</b> @cf_mz 💻
+- <b>PR-стратег:</b> @ilialg 📈
+
+Желаем продуктивной работы! 🎯
+<i>Начинай прямо сейчас!</i> 🌟🚀"""
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'OK')
-def keep_alive():
-    import requests, time
-    while True:
-        time.sleep(600)
-        try:
-            requests.get(f"http://localhost:{os.environ.get('PORT',8080)}", timeout=5)
-        except:
-            pass
-threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get('PORT',8080))), Handler).serve_forever(), daemon=True).start()
 
 def load_db():
@@ -48,8 +56,7 @@ def get_accounts(uid):
 
 def get_active_account(uid):
     accs = get_accounts(uid)
-    if not accs:
-        return None, None
+    if not accs: return None, None
     current = user_states.get(str(uid), {}).get('current_account')
     if current and current in accs:
         return current, accs[current]
@@ -58,11 +65,10 @@ def get_active_account(uid):
     return first_name, accs[first_name]
 
 def main_menu(uid):
+    global global_stopped
     accs = get_accounts(uid)
     acc_count = len(accs)
-    aname, acc = get_active_account(uid)
-    is_authorized = acc is not None
-    
+    is_authorized = get_active_account(uid)[1] is not None
     kb = []
     if is_authorized:
         kb.append([InlineKeyboardButton("💬 Мои чаты", callback_data='chats_menu')])
@@ -73,6 +79,11 @@ def main_menu(uid):
         kb.append([InlineKeyboardButton(f"👤 Аккаунты ({acc_count}/3)", callback_data='accounts_list')])
     if acc_count < 3:
         kb.append([InlineKeyboardButton("📱 ВОЙТИ ПО НОМЕРУ", callback_data='login_phone')])
+    if uid == ADMIN_ID:
+        if global_stopped:
+            kb.append([InlineKeyboardButton("▶️ ВКЛЮЧИТЬ БОТА", callback_data='global_resume')])
+        else:
+            kb.append([InlineKeyboardButton("🛑 ОСТАНОВИТЬ БОТА", callback_data='global_stop')])
     return InlineKeyboardMarkup(kb) if kb else InlineKeyboardMarkup([[InlineKeyboardButton("📱 ВОЙТИ ПО НОМЕРУ", callback_data='login_phone')]])
 
 def back_keyboard():
@@ -105,21 +116,15 @@ async def spam_loop(session_str, uid, acc_name):
         chats = list(u.get('chats', []))
         text = u.get('message', 'Привет!')
         delay = max(int(u.get('delay', 300)), 30)
-        cycle = 1
-        while task_id in active_tasks:
+        while task_id in active_tasks and not global_stopped:
             for chat in chats:
-                if task_id not in active_tasks: return
-                try:
-                    await client.send_message(chat, text)
-                    logger.info(f"✅ {chat}")
-                except Exception as e:
-                    logger.warning(f"❌ {chat}: {e}")
+                if task_id not in active_tasks or global_stopped: return
+                try: await client.send_message(chat, text)
+                except: pass
                 await asyncio.sleep(2)
-            cycle += 1
             for _ in range(delay // 5):
-                if task_id not in active_tasks: return
+                if task_id not in active_tasks or global_stopped: return
                 await asyncio.sleep(5)
-            await asyncio.sleep(delay % 5)
     except Exception as e:
         logger.error(f"Крах: {e}")
     finally:
@@ -132,10 +137,7 @@ async def finish_login(uid, client, chat_id, acc_num):
     db = load_db()
     if str(uid) not in db: db[str(uid)] = {'accounts': {}}
     acc_name = f"acc_{acc_num}"
-    db[str(uid)]['accounts'][acc_name] = {
-        'session': session_str, 'username': me.username or me.first_name,
-        'chats': [], 'message': 'Привет!', 'delay': 300
-    }
+    db[str(uid)]['accounts'][acc_name] = {'session': session_str, 'username': me.username or me.first_name, 'chats': [], 'message': 'Привет!', 'delay': 300}
     save_db(db)
     user_states[str(uid)] = {'current_account': acc_name}
     await client.disconnect()
@@ -154,24 +156,31 @@ async def process_code(uid, chat_id, msg_id, state):
         await bot.edit_message_text("🔒 Облачный пароль (текстом):", chat_id, msg_id, reply_markup=back_keyboard())
     except Exception as e:
         await bot.edit_message_text(f"❌ {e}", chat_id, msg_id, reply_markup=main_menu(uid))
-        if str(uid) in user_states:
-            try: await user_states[str(uid)].get('client').disconnect()
-            except: pass
-            del user_states[str(uid)]
 
 @bot.callback_query_handler(func=lambda call: True)
 async def callback(call):
+    global global_stopped
     uid = str(call.from_user.id)
     state = user_states.get(uid, {})
     data = call.data
     cid, mid = call.message.chat.id, call.message.message_id
-    
+    if global_stopped and uid != ADMIN_ID:
+        await bot.answer_callback_query(call.id, "Бот остановлен")
+        return
     try:
-        if data == 'login_phone':
+        if data == 'global_stop':
+            if uid != ADMIN_ID: return
+            global_stopped = True
+            for k in list(active_tasks.keys()): del active_tasks[k]
+            await bot.edit_message_text("🛑 Бот остановлен", cid, mid, reply_markup=main_menu(uid))
+        elif data == 'global_resume':
+            if uid != ADMIN_ID: return
+            global_stopped = False
+            await bot.edit_message_text("✅ Бот работает", cid, mid, reply_markup=main_menu(uid))
+        elif data == 'login_phone':
             if len(get_accounts(uid)) >= 3: await bot.answer_callback_query(call.id, "Максимум 3!"); return
             user_states[uid] = {'step': 'waiting_phone', 'acc_num': len(get_accounts(uid)) + 1}
             await bot.edit_message_text("📱 Номер (с +):", cid, mid, reply_markup=back_keyboard())
-
         elif data.startswith('c') and len(data)==2 and data[1].isdigit():
             if state.get('step')=='entering_code':
                 code = state.get('entered_code','') + data[1]
@@ -179,99 +188,81 @@ async def callback(call):
                     user_states[uid]['entered_code']=code
                     await bot.edit_message_text(f"🔢 Код: {'●'*len(code)}", cid, mid, reply_markup=code_keyboard())
             await bot.answer_callback_query(call.id)
-
         elif data=='cb':
             if state.get('step')=='entering_code':
                 code=state.get('entered_code','')[:-1]
                 user_states[uid]['entered_code']=code
                 await bot.edit_message_text(f"🔢 Код: {'●'*len(code) if code else 'пусто'}", cid, mid, reply_markup=code_keyboard())
             await bot.answer_callback_query(call.id)
-
         elif data=='cd':
             if state.get('step')=='entering_code':
                 await process_code(uid, cid, mid, state)
             await bot.answer_callback_query(call.id)
-
         elif data=='accounts_list':
             accs = get_accounts(uid)
             if not accs: await bot.answer_callback_query(call.id, "Нет аккаунтов"); return
             kb=[[InlineKeyboardButton(f"👤 @{a.get('username',n)}", callback_data=f"acc_{n}")] for n,a in accs.items()]
             kb+=[[InlineKeyboardButton("🗑 Удалить", callback_data='delete_account')],[InlineKeyboardButton("🔙 Меню", callback_data='back_main')]]
             await bot.edit_message_text("👤 Аккаунты:", cid, mid, reply_markup=InlineKeyboardMarkup(kb))
-
         elif data.startswith('acc_'):
             an=data[4:]
             accs = get_accounts(uid)
             if an in accs:
                 user_states[uid]={'current_account':an}
-                await bot.answer_callback_query(call.id, f"✅ Выбран @{accs[an].get('username',an)}")
+                await bot.answer_callback_query(call.id, f"Выбран @{accs[an].get('username',an)}")
                 await bot.edit_message_text("🏠 Меню:", cid, mid, reply_markup=main_menu(uid))
-
         elif data=='delete_account':
             accs = get_accounts(uid)
             if not accs: await bot.answer_callback_query(call.id, "Нечего"); return
             kb=[[InlineKeyboardButton(f"❌ @{a.get('username',n)}", callback_data=f"del_{n}")] for n,a in accs.items()]
             kb+=[[InlineKeyboardButton("🔙 Назад", callback_data='accounts_list')]]
             await bot.edit_message_text("Удалить:", cid, mid, reply_markup=InlineKeyboardMarkup(kb))
-
         elif data.startswith('del_'):
             an=data[4:]
             accs = get_accounts(uid)
             if an in accs:
                 active_tasks.pop(f"{uid}_{an}", None)
                 db=load_db(); del db[uid]['accounts'][an]; save_db(db)
-                if user_states.get(uid,{}).get('current_account')==an:
-                    user_states[uid]['current_account']=None
                 await bot.answer_callback_query(call.id, "Удалён!")
                 await bot.edit_message_text("👤 Обновлено", cid, mid, reply_markup=main_menu(uid))
-
         elif data=='chats_menu':
             aname, acc = get_active_account(uid)
             if not acc: await bot.answer_callback_query(call.id, "Войди в аккаунт!"); return
             chats=acc.get('chats',[])
             kb,cl=chats_menu_keyboard(chats)
             await bot.edit_message_text(f"💬 Чаты (@{acc.get('username',aname)}):\n{cl}", cid, mid, reply_markup=kb)
-
         elif data=='add_chat':
             user_states[uid]={**state,'step':'adding_chats'}
-            await bot.edit_message_text("➕ Отправь чаты СПИСКОМ:\n• Каждый с новой строки\n• Или через запятую\n• @username или ID или ссылки", cid, mid, reply_markup=back_keyboard())
-
+            await bot.edit_message_text("➕ Отправь чаты СПИСКОМ:", cid, mid, reply_markup=back_keyboard())
         elif data=='clear_chats':
             aname, acc = get_active_account(uid)
             if acc:
                 db=load_db(); db[uid]['accounts'][aname]['chats']=[]; save_db(db)
                 await bot.answer_callback_query(call.id, "Очищено!")
                 await bot.edit_message_text("💬 Чаты:\nпусто", cid, mid, reply_markup=chats_menu_keyboard([])[0])
-
         elif data=='set_text':
             user_states[uid]={**state,'step':'setting_text'}
-            await bot.edit_message_text("📝 Отправь текст рассылки:", cid, mid, reply_markup=back_keyboard())
-
+            await bot.edit_message_text("📝 Текст рассылки:", cid, mid, reply_markup=back_keyboard())
         elif data=='set_delay':
             user_states[uid]={**state,'step':'setting_delay'}
-            await bot.edit_message_text("⏱ Интервал в секундах (30-3600):", cid, mid, reply_markup=back_keyboard())
-
+            await bot.edit_message_text("⏱ Интервал (30-3600):", cid, mid, reply_markup=back_keyboard())
         elif data=='start_spam':
             aname, acc = get_active_account(uid)
-            if not acc: await bot.answer_callback_query(call.id, "Войди в аккаунт!"); return
+            if not acc: await bot.answer_callback_query(call.id, "Войди!"); return
             if not acc.get('chats'): await bot.answer_callback_query(call.id, "Добавь чаты!"); return
             task_id = f"{uid}_{aname}"
-            active_tasks.pop(task_id, None)
             active_tasks[task_id] = True
             asyncio.create_task(spam_loop(acc['session'], uid, aname))
-            await bot.edit_message_text(f"🚀 Запущено для @{acc.get('username',aname)}!", cid, mid, reply_markup=back_keyboard())
-
+            await bot.edit_message_text(f"🚀 Запущено!", cid, mid, reply_markup=back_keyboard())
         elif data=='stop_spam':
             aname, acc = get_active_account(uid)
             if aname: active_tasks.pop(f"{uid}_{aname}", None)
             await bot.edit_message_text("⏹ Стоп", cid, mid, reply_markup=back_keyboard())
-
         elif data=='status':
             aname, acc = get_active_account(uid)
-            if not acc: await bot.answer_callback_query(call.id, "Войди в аккаунт!"); return
+            if not acc: await bot.answer_callback_query(call.id, "Войди!"); return
             act=f"{uid}_{aname}" in active_tasks
             await bot.edit_message_text(f"📊 @{acc.get('username',aname)}\nРассылка: {'🟢' if act else '🔴'}\nЧатов: {len(acc.get('chats',[]))}\nТекст: {acc.get('message','-')}\nИнтервал: {acc.get('delay',300)}с", cid, mid, reply_markup=back_keyboard())
-
         elif data=='back_main':
             await bot.edit_message_text("🏠 Меню:", cid, mid, reply_markup=main_menu(uid))
     except Exception as e:
@@ -279,15 +270,22 @@ async def callback(call):
 
 @bot.message_handler(commands=['start'])
 async def start(msg):
+    global global_stopped
     uid = str(msg.from_user.id)
-    await bot.send_message(msg.chat.id, "👋 Бот-рассыльщик\n\nВыбирай:", reply_markup=main_menu(uid))
+    if global_stopped and uid != ADMIN_ID:
+        await bot.send_message(msg.chat.id, "Бот остановлен.")
+        return
+    await bot.send_message(msg.chat.id, WELCOME_TEXT, reply_markup=main_menu(uid), parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: True)
 async def text(msg):
+    global global_stopped
     uid=str(msg.from_user.id)
     state=user_states.get(uid,{})
     step=state.get('step')
-
+    if global_stopped and uid != ADMIN_ID:
+        await bot.send_message(msg.chat.id, "Бот остановлен.")
+        return
     if step=='waiting_phone':
         phone=msg.text.strip()
         client=TelegramClient(StringSession(), API_ID, API_HASH)
@@ -300,7 +298,6 @@ async def text(msg):
             await bot.send_message(msg.chat.id,f"❌ {e}",reply_markup=main_menu(uid))
             del user_states[uid]
         return
-
     elif step=='waiting_2fa':
         pwd=msg.text.strip()
         client=state.get('client')
@@ -312,10 +309,8 @@ async def text(msg):
             except Exception as e:
                 await bot.send_message(msg.chat.id,f"❌ {e}",reply_markup=back_keyboard())
         return
-
     elif step=='adding_chats':
         raw=msg.text.strip()
-        # Разделяем по запятым или переносам строк
         chats = [c.strip() for c in raw.replace('\n', ',').split(',') if c.strip()]
         aname, acc = get_active_account(uid)
         if acc:
@@ -331,7 +326,6 @@ async def text(msg):
             await bot.send_message(msg.chat.id,f"✅ Добавлено {added} чатов (всего: {len(existing)})",reply_markup=main_menu(uid))
         del user_states[uid]
         return
-
     elif step=='setting_text':
         txt=msg.text.strip()
         aname, acc = get_active_account(uid)
@@ -340,7 +334,6 @@ async def text(msg):
             await bot.send_message(msg.chat.id,f"✅ Текст: {txt}",reply_markup=main_menu(uid))
         del user_states[uid]
         return
-
     elif step=='setting_delay':
         try:
             d=int(msg.text.strip())
@@ -353,7 +346,6 @@ async def text(msg):
         except: await bot.send_message(msg.chat.id,"❌ Число!",reply_markup=back_keyboard()); return
         del user_states[uid]
         return
-
     await bot.send_message(msg.chat.id,"🏠 Меню:",reply_markup=main_menu(uid))
 
 async def restore():
