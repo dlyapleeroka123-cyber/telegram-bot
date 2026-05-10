@@ -26,6 +26,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'OK')
+def keep_alive():
+    import requests, time
+    while True:
+        time.sleep(600)
+        try:
+            requests.get(f"http://localhost:{os.environ.get('PORT',8080)}", timeout=5)
+        except:
+            pass
+threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get('PORT',8080))), Handler).serve_forever(), daemon=True).start()
 
 def load_db():
